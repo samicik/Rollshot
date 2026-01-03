@@ -7,12 +7,14 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 import keyboard
+import mouse
 import os
 import json
 import threading
 import subprocess
 import pystray
 import sys
+import winreg
 
 # Renkler (Logo uyumlu)
 DARK_BLUE = '#1e2a4a'
@@ -24,6 +26,7 @@ GRAY = '#7a8a9a'
 APP_DIR = r"C:\Rollshot"
 SS_DIR = os.path.join(APP_DIR, "SS")
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
+
 def resource_path(filename):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, filename)
@@ -34,6 +37,7 @@ BACK_FILE = resource_path("back.png")
 
 is_running = False
 tray_icon = None
+last_screenshot = None
 
 def setup_folders():
     os.makedirs(APP_DIR, exist_ok=True)
@@ -48,6 +52,78 @@ def load_config():
 def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f)
+
+def is_startup_enabled():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                            r"Software\Microsoft\Windows\CurrentVersion\Run", 
+                            0, winreg.KEY_READ)
+        winreg.QueryValueEx(key, "Rollshot")
+        winreg.CloseKey(key)
+        return True
+    except:
+        return False
+
+def toggle_startup():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Run",
+                            0, winreg.KEY_ALL_ACCESS)
+        
+        if is_startup_enabled():
+            winreg.DeleteValue(key, "Rollshot")
+            show_notification("Başlangıçta çalıştır: KAPALI")
+        else:
+            exe_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+            winreg.SetValueEx(key, "Rollshot", 0, winreg.REG_SZ, f'"{exe_path}"')
+            show_notification("Başlangıçta çalıştır: AÇIK")
+        
+        winreg.CloseKey(key)
+        update_tray_menu()
+    except Exception as e:
+        print(f"Startup toggle error: {e}")
+
+def show_notification(message):
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo("Rollshot", message)
+    root.destroy()
+
+def convert_last_to_pdf():
+    global last_screenshot
+    
+    if last_screenshot and os.path.exists(last_screenshot):
+        pdf_path = last_screenshot.replace('.png', '.pdf')
+        img = Image.open(last_screenshot)
+        img.convert('RGB').save(pdf_path, 'PDF')
+        
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showinfo("Rollshot", f"PDF oluşturuldu!\n\n{os.path.basename(pdf_path)}")
+        root.destroy()
+        
+        subprocess.Popen(f'explorer /select,"{pdf_path}"')
+    else:
+        # Son dosyayı bul
+        files = [f for f in os.listdir(SS_DIR) if f.endswith('.png')]
+        if files:
+            files.sort(reverse=True)
+            last_file = os.path.join(SS_DIR, files[0])
+            pdf_path = last_file.replace('.png', '.pdf')
+            img = Image.open(last_file)
+            img.convert('RGB').save(pdf_path, 'PDF')
+            
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showinfo("Rollshot", f"PDF oluşturuldu!\n\n{os.path.basename(pdf_path)}")
+            root.destroy()
+            
+            subprocess.Popen(f'explorer /select,"{pdf_path}"')
+        else:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showwarning("Rollshot", "Henüz screenshot yok!")
+            root.destroy()
 
 def first_run_check():
     config = load_config()
@@ -66,11 +142,9 @@ def first_run_check():
         y = (win.winfo_screenheight() // 2) - 200
         win.geometry(f"+{x}+{y}")
         
-        # Canvas
         canvas = tk.Canvas(win, width=500, height=400, bg=DARK_BLUE, highlightthickness=0)
         canvas.pack(fill='both', expand=True)
         
-        # Arka plan watermark (sol üst köşeye kaymış, silik)
         try:
             back_file = BACK_FILE
             bg_img = Image.open(back_file)
@@ -87,7 +161,6 @@ def first_run_check():
         except:
             pass
         
-        # Üst logo (küçük ve net)
         try:
             logo_img = Image.open(ICON_FILE)
             logo_img = logo_img.resize((110, 110), Image.Resampling.LANCZOS)
@@ -97,21 +170,18 @@ def first_run_check():
         except:
             canvas.create_text(250, 80, text="RS", font=("Segoe UI", 40, "bold"), fill=LIGHT_BLUE)
         
-        # Kısayol kutusu
         canvas.create_rectangle(170, 155, 330, 200, fill='#2a3a5a', outline=LIGHT_BLUE, width=2)
         canvas.create_text(250, 177, text="Ctrl+PrtScrn", font=("Consolas", 18, "bold"), fill=WHITE)
         
-        # Adımlar
         steps_text = "Kısayola bas  ›  Bölge seç  ›  Fareyi bırak  ›  Tamam!"
         canvas.create_text(250, 240, text=steps_text, font=("Segoe UI", 11), fill=WHITE)
         
-        # Alt bilgi
-        canvas.create_text(250, 280, text="Otomatik kaydeder ve klasörü açar", 
-                          font=("Segoe UI", 10), fill=GRAY)
+        canvas.create_text(250, 270, text="İpucu: Scroll sırasında tıklayarak durdurabilirsiniz", 
+                          font=("Segoe UI", 9, "italic"), fill=GRAY)
+        
         canvas.create_text(250, 305, text="mimsami@gmail.com", 
                           font=("Segoe UI", 9), fill=GRAY)
         
-        # Başla butonu
         btn = tk.Button(win, text="BAŞLA", font=("Segoe UI", 11, "bold"),
                        bg=LIGHT_BLUE, fg=WHITE, width=18, pady=8,
                        relief='flat', cursor='hand2', activebackground='#3a96d0',
@@ -125,6 +195,7 @@ def first_run_check():
         
         config["installed"] = True
         save_config(config)
+
 def select_region():
     root = tk.Tk()
     root.attributes('-fullscreen', True)
@@ -207,10 +278,12 @@ def open_folder():
     subprocess.Popen(f'explorer "{SS_DIR}"')
 
 def take_scrollshot():
-    global is_running
+    global is_running, last_screenshot
     if is_running:
         return
     is_running = True
+    
+    stop_capture = {"flag": False}
     
     region = select_region()
     
@@ -218,7 +291,13 @@ def take_scrollshot():
         is_running = False
         return
     
+    def on_click():
+        stop_capture["flag"] = True
+    
     time.sleep(1.5)
+    
+    mouse.on_click(on_click)
+    
     screenshots = []
     
     with mss.mss() as sct:
@@ -227,6 +306,9 @@ def take_scrollshot():
         prev_img = None
         
         for i in range(50):
+            if stop_capture["flag"]:
+                break
+            
             screenshot = sct.grab(monitor)
             img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
             
@@ -238,6 +320,8 @@ def take_scrollshot():
             pyautogui.scroll(-800)
             time.sleep(0.5)
     
+    mouse.unhook_all()
+    
     if screenshots:
         final = stitch_images(screenshots)
         if final:
@@ -245,6 +329,7 @@ def take_scrollshot():
             filename = f"Rollshot_{timestamp}.png"
             filepath = os.path.join(SS_DIR, filename)
             final.save(filepath)
+            last_screenshot = filepath
             open_folder()
     
     is_running = False
@@ -267,9 +352,40 @@ def uninstall():
         if result:
             if os.path.exists(CONFIG_FILE):
                 os.remove(CONFIG_FILE)
+            # Startup'tan kaldır
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                    0, winreg.KEY_ALL_ACCESS)
+                winreg.DeleteValue(key, "Rollshot")
+                winreg.CloseKey(key)
+            except:
+                pass
             quit_app()
     except:
         quit_app()
+
+def update_tray_menu():
+    global tray_icon
+    if tray_icon:
+        tray_icon.menu = create_menu()
+        tray_icon.update_menu()
+
+def create_menu():
+    startup_text = "✓ Başlangıçta çalıştır" if is_startup_enabled() else "Başlangıçta çalıştır"
+    
+    return pystray.Menu(
+        pystray.MenuItem("Rollshot", lambda: None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Screenshot Al", lambda: threading.Thread(target=take_scrollshot).start()),
+        pystray.MenuItem("Son SS'i PDF Yap", lambda: threading.Thread(target=convert_last_to_pdf).start()),
+        pystray.MenuItem("Klasörü Aç", lambda: open_folder()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(startup_text, lambda: toggle_startup()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Kaldır", lambda: threading.Thread(target=uninstall).start()),
+        pystray.MenuItem("Çıkış", quit_app)
+    )
 
 def create_tray_icon():
     try:
@@ -278,20 +394,11 @@ def create_tray_icon():
     except:
         icon_img = Image.new('RGB', (64, 64), color=DARK_BLUE)
     
-    menu = pystray.Menu(
-        pystray.MenuItem("Rollshot", lambda: None, enabled=False),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Screenshot Al", lambda: threading.Thread(target=take_scrollshot).start()),
-        pystray.MenuItem("Klasörü Aç", lambda: open_folder()),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Kaldır", lambda: threading.Thread(target=uninstall).start()),
-        pystray.MenuItem("Çıkış", quit_app)
-    )
-    
-    return pystray.Icon("Rollshot", icon_img, "Rollshot • Ctrl+PrtSc", menu)
+    return pystray.Icon("Rollshot", icon_img, "Rollshot • Ctrl+PrtSc", create_menu())
 
 def quit_app(icon=None):
     keyboard.unhook_all()
+    mouse.unhook_all()
     if icon:
         icon.stop()
     os._exit(0)
